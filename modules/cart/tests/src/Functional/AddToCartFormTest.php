@@ -38,6 +38,57 @@ class AddToCartFormTest extends CartBrowserTestBase {
   }
 
   /**
+   * Test the skip cart formatter setting.
+   */
+  public function testSkipCart() {
+    $product = $this->variation->getProduct();
+
+    // Enable the skip_cart setting.
+    $display = entity_get_display('commerce_product', $product->bundle(), 'default');
+    $component = $display->getComponent('variations');
+    $component['settings']['skip_cart'] = TRUE;
+    $display
+      ->setComponent('variations', $component)
+      ->save();
+
+    // Test the changes to the form when the skip_cart option is enabled.
+    $this->drupalGet('product/' . $product->id());
+    $this->assertSession()->buttonExists('Checkout');
+    $this->assertSession()->buttonNotExists('Add to cart');
+
+    $this->submitForm([], 'Checkout');
+    $this->assertSession()->statusCodeEquals(200);
+    preg_match('|checkout/(\d+)$|', $this->getUrl(), $matches);
+    $this->assertNotEmpty($matches, 'Correctly redirected to checkout');
+
+    $order = Order::load($matches[1]);
+    $this->assertEquals(0, $order->get('cart')->value);
+
+    $order_items = $order->getItems();
+    $this->assertNotEmpty(count($order_items) == 1, 'One order item was created.');
+    $this->assertOrderItemInOrder($this->variation, $order_items[0], 1);
+
+    // Now test as an anonymous user.
+    $this->drupalLogout();
+
+    $this->drupalGet('product/' . $product->id());
+    $this->assertSession()->buttonExists('Checkout');
+    $this->assertSession()->buttonNotExists('Add to cart');
+
+    $this->submitForm([], 'Checkout');
+    $this->assertSession()->statusCodeEquals(200);
+    preg_match('|checkout/(\d+)$|', $this->getUrl(), $matches);
+    $this->assertNotEmpty($matches, 'Correctly redirected to checkout');
+
+    $order = Order::load($matches[1]);
+    $this->assertEquals(0, $order->get('cart')->value);
+
+    $order_items = $order->getItems();
+    $this->assertNotEmpty(count($order_items) == 1, 'One order item was created.');
+    $this->assertOrderItemInOrder($this->variation, $order_items[0], 1);
+  }
+
+  /**
    * Test assigning an anonymous cart to a logged in user.
    */
   public function testCartAssignment() {

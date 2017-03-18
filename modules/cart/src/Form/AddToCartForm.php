@@ -6,6 +6,7 @@ use Drupal\commerce\Context;
 use Drupal\commerce\PurchasableEntityInterface;
 use Drupal\commerce_cart\CartManagerInterface;
 use Drupal\commerce_cart\CartProviderInterface;
+use Drupal\commerce_cart\CartSessionInterface;
 use Drupal\commerce_order\Resolver\OrderTypeResolverInterface;
 use Drupal\commerce_price\Resolver\ChainPriceResolverInterface;
 use Drupal\commerce_store\StoreContextInterface;
@@ -34,6 +35,13 @@ class AddToCartForm extends ContentEntityForm {
    * @var \Drupal\commerce_cart\CartProviderInterface
    */
   protected $cartProvider;
+
+  /**
+   * The cart session.
+   *
+   * @var \Drupal\commerce_cart\CartSessionInterface
+   */
+  protected $cartSession;
 
   /**
    * The order type resolver.
@@ -81,6 +89,8 @@ class AddToCartForm extends ContentEntityForm {
    *   The cart manager.
    * @param \Drupal\commerce_cart\CartProviderInterface $cart_provider
    *   The cart provider.
+   * @param \Drupal\commerce_cart\CartSessionInterface $cart_session
+   *   The cart session.
    * @param \Drupal\commerce_order\Resolver\OrderTypeResolverInterface $order_type_resolver
    *   The order type resolver.
    * @param \Drupal\commerce_store\StoreContextInterface $store_context
@@ -90,11 +100,12 @@ class AddToCartForm extends ContentEntityForm {
    * @param \Drupal\Core\Session\AccountInterface $current_user
    *   The current user.
    */
-  public function __construct(EntityManagerInterface $entity_manager, CartManagerInterface $cart_manager, CartProviderInterface $cart_provider, OrderTypeResolverInterface $order_type_resolver, StoreContextInterface $store_context, ChainPriceResolverInterface $chain_price_resolver, AccountInterface $current_user) {
+  public function __construct(EntityManagerInterface $entity_manager, CartManagerInterface $cart_manager, CartProviderInterface $cart_provider, CartSessionInterface $cart_session, OrderTypeResolverInterface $order_type_resolver, StoreContextInterface $store_context, ChainPriceResolverInterface $chain_price_resolver, AccountInterface $current_user) {
     parent::__construct($entity_manager);
 
     $this->cartManager = $cart_manager;
     $this->cartProvider = $cart_provider;
+    $this->cartSession = $cart_session;
     $this->orderTypeResolver = $order_type_resolver;
     $this->storeContext = $store_context;
     $this->chainPriceResolver = $chain_price_resolver;
@@ -111,6 +122,7 @@ class AddToCartForm extends ContentEntityForm {
       $container->get('entity.manager'),
       $container->get('commerce_cart.cart_manager'),
       $container->get('commerce_cart.cart_provider'),
+      $container->get('commerce_cart.cart_session'),
       $container->get('commerce_order.chain_order_type_resolver'),
       $container->get('commerce_store.store_context'),
       $container->get('commerce_price.chain_price_resolver'),
@@ -161,7 +173,7 @@ class AddToCartForm extends ContentEntityForm {
   protected function actions(array $form, FormStateInterface $form_state) {
     $actions['submit'] = [
       '#type' => 'submit',
-      '#value' => $this->t('Add to cart'),
+      '#value' => $form_state->get(['settings', 'skip_cart']) ? $this->t('Checkout') : $this->t('Add to cart'),
       '#submit' => ['::submitForm'],
     ];
 
@@ -182,16 +194,38 @@ class AddToCartForm extends ContentEntityForm {
     $order_type = $this->orderTypeResolver->resolve($order_item);
 
     $store = $this->selectStore($purchased_entity);
-    $cart = $this->cartProvider->getCart($order_type, $store);
-    if (!$cart) {
-      $cart = $this->cartProvider->createCart($order_type, $store);
-    }
-    $this->cartManager->addOrderItem($cart, $order_item, $form_state->get(['settings', 'combine']));
 
-    drupal_set_message($this->t('@entity added to @cart-link.', [
-      '@entity' => $purchased_entity->label(),
-      '@cart-link' => Link::createFromRoute($this->t('your cart', [], ['context' => 'cart link']), 'commerce_cart.page')->toString(),
-    ]));
+    if ($form_state->get(['settings', 'skip_cart'])) {
+      // Create the new order.
+      /** @var \Drupal\commerce_order\Entity\OrderInterface $order */
+      $order = $this->entityTypeManager->getStorage('commerce_order')->create([
+        'type' => $order_type,
+        'store_id' => $store->id(),
+        'uid' => $this->currentUser()->id(),
+        'cart' => FALSE,
+      ]);
+
+      $order->addItem($order_item);
+      $order->save();
+
+      // Add the order as a completed cart to allow anonymous checkout access.
+      // @todo Find a better way for this.
+      $this->cartSession->addCartId($order->id(), CartSessionInterface::COMPLETED);
+
+      $form_state->setRedirect('commerce_checkout.form', ['commerce_order' => $order->id()]);
+    }
+    else {
+      $cart = $this->cartProvider->getCart($order_type, $store);
+      if (!$cart) {
+        $cart = $this->cartProvider->createCart($order_type, $store);
+      }
+      $this->cartManager->addOrderItem($cart, $order_item, $form_state->get(['settings', 'combine']));
+      drupal_set_message($this->t('@entity added to @cart-link.', [
+        '@entity' => $purchased_entity->label(),
+        '@cart-link' => Link::createFromRoute($this->t('your cart', [], ['context' => 'cart link']), 'commerce_cart.page')->toString(),
+      ]));
+    }
+
   }
 
   /**
